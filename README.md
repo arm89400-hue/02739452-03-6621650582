@@ -48,10 +48,12 @@ create_tables
 | `pipeline_runs` | Run history for the status page |
 
 ## Web dashboard (http://localhost:8501)
-Reads **directly from PostgreSQL** (psycopg2).
-* **Dashboard:** KPIs (records, unique cards, sources, average price, most expensive card), top-10 chart, median price by version, and a full table. Filters for source, version, price range and search.
-* **Compare sources:** the same card's price on each site, with the biggest price gaps.
-* **Pipeline status:** the latest run's task states, quality-check results and run history.
+Streamlit, Thai interface, reads **directly from PostgreSQL** (psycopg2). Prices are shown in **Thai baht**: USD prices are converted with the latest rate from open.er-api.com, falling back to 33 THB/USD if the rate can't be fetched.
+* **🔍 ค้นหาราคา (price search):** search by card name or number, filter by card type, sort; KPI cards; a gallery of card pictures with names; a price table with each site's price and the cheapest site (10 rows per page).
+* **📊 สรุปภาพรวม (overview):** top-10 most expensive cards, cards by price range, median price by card type, and price records per site.
+* **⚙️ สถานะระบบ (system status, bonus):** the latest run's task states, quality-check results and run history.
+
+Card pictures come from TCGplayer's image server, using the product ID stored by the pipeline.
 
 ## How to run
 
