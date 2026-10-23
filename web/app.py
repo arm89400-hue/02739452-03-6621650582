@@ -137,6 +137,15 @@ if not m.empty:
     has = m[src_cols].notna().any(axis=1)
     m["ถูกสุดที่"] = m[src_cols].fillna(float("inf")).idxmin(axis=1).where(has, "–")
     m["แบบการ์ด"] = m["variant"].map(VAR_TH).fillna(m["variant"])
+    tcg = prices[prices["source"] == "tcgcsv"].copy()
+    tcg["pid"] = tcg["source_key"].str.split("|").str[0]
+    img = (tcg.drop_duplicates(["card_number", "variant"])
+              .set_index(["card_number", "variant"])["pid"]
+              .map(lambda pid: f"https://tcgplayer-cdn.tcgplayer.com/product/{pid}_200w.jpg"))
+    m["รูป"] = [img.get((n, v)) for n, v in zip(m["card_number"], m["variant"])]
+    # fallback: Limitless card image (base art) when TCGplayer has no matching product
+    lim = "https://limitlesstcg.nyc3.cdn.digitaloceanspaces.com/one-piece/{s}/{n}_EN.webp"
+    m["รูป"] = m["รูป"].fillna(m["card_number"].map(lambda n: lim.format(s=n.split("-")[0], n=n)))
 
 # ------------------------------------------------------------------ search + filters (main page, not sidebar)
 s1, s2, s3 = st.columns([3, 1.4, 1.2])
@@ -179,14 +188,25 @@ with tab1:
             kpi(k3, "👑", "แพงที่สุด", "–")
         kpi(k4, "🔗", "เทียบได้หลายเว็บ", f"{int((view['n_sources'] > 1).sum()):,} ใบ", "มีราคามากกว่า 1 เว็บ")
         st.write("")
+        st.markdown("#### 🖼️ การ์ดเด่น (12 ใบแรกตามการเรียง)")
+        g = view.head(12)
+        cols = st.columns(6)
+        for i, (_, r) in enumerate(g.iterrows()):
+            with cols[i % 6]:
+                st.image(r["รูป"], width="stretch")
+                st.markdown(f"<div style='text-align:center;line-height:1.3;margin-bottom:12px'><b>{r['card_name']}</b><br>"
+                            f"<span class='hint'>{r['card_number']} · {r['แบบการ์ด']}</span><br>"
+                            f"<span style='color:{ACCENT};font-weight:700;font-family:Prompt'>{baht(r['avg_usd'])}</span></div>",
+                            unsafe_allow_html=True)
         st.markdown("#### ราคาการ์ดแต่ละใบ (บาท)")
         st.markdown('<p class="hint">ช่องว่าง = เว็บนั้นไม่มีราคาการ์ดใบนี้ · คอลัมน์ "ถูกสุดที่" บอกว่าควรซื้อที่เว็บไหน</p>', unsafe_allow_html=True)
         cfg = {c: st.column_config.NumberColumn(c, format="฿%.0f") for c in ["PriceCharting", "Limitless TCG", "TCGplayer"]}
         cfg.update({"card_number": "เลขการ์ด", "card_name": "ชื่อการ์ด", "rarity": "ความหายาก", "n_sources": "จำนวนเว็บ",
                     "avg_usd": st.column_config.NumberColumn("ราคาเฉลี่ย", format="฿%.0f")})
-        st.dataframe(view[["card_number", "card_name", "แบบการ์ด", "rarity", "avg_usd", "ถูกสุดที่",
+        cfg["รูป"] = st.column_config.ImageColumn("รูปการ์ด", width="small", help="คลิกเพื่อขยาย")
+        st.dataframe(view[["รูป", "card_number", "card_name", "แบบการ์ด", "rarity", "avg_usd", "ถูกสุดที่",
                            "PriceCharting", "Limitless TCG", "TCGplayer", "n_sources"]],
-                     hide_index=True, width="stretch", height=520, column_config=cfg)
+                     hide_index=True, width="stretch", height=560, row_height=70, column_config=cfg)
 
 # ------------------------------------------------------------------ tab 2: overview charts
 with tab2:
