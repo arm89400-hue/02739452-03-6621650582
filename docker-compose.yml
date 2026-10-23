@@ -69,6 +69,12 @@ services:
   airflow-webserver:
     <<: *airflow-common
     command: webserver
+    environment:
+      <<: *airflow-env
+      _PIP_ADDITIONAL_REQUIREMENTS: ""                    # webserver does not run tasks
+      AIRFLOW__WEBSERVER__WORKERS: 2                      # default 4 is too heavy on a laptop
+      AIRFLOW__WEBSERVER__WEB_SERVER_MASTER_TIMEOUT: 600  # default 120s -> gunicorn killed on slow start
+      AIRFLOW__WEBSERVER__WEB_SERVER_WORKER_TIMEOUT: 300
     ports:
       - "8080:8080"
     restart: unless-stopped
