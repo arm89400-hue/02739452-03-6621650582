@@ -65,6 +65,25 @@ def nice(fig, h=380):
     return fig
 
 
+def paginate(d: pd.DataFrame, key: str, size: int = 10) -> pd.DataFrame:
+    """Show one page of rows with ◀ ▶ buttons, so tables never need scrolling."""
+    pages = max(1, -(-len(d) // size))
+    page = min(st.session_state.get(key, 1), pages)
+    a, b, c = st.columns([1, 2, 1])
+    if a.button("◀ ก่อนหน้า", key=f"{key}_prev", disabled=page <= 1, width="stretch"):
+        page -= 1
+    if c.button("ถัดไป ▶", key=f"{key}_next", disabled=page >= pages, width="stretch"):
+        page += 1
+    st.session_state[key] = page
+    b.markdown(f"<div style='text-align:center;padding-top:6px'>หน้า <b>{page}</b> / {pages} "
+               f"<span class='hint'>(ทั้งหมด {len(d):,} รายการ)</span></div>", unsafe_allow_html=True)
+    return d.iloc[(page - 1) * size: page * size]
+
+
+def fit_height(n_rows: int, row: int = 35) -> int:
+    return row * (n_rows + 1) + 3
+
+
 # ------------------------------------------------------------------ data
 @st.cache_data(ttl=3600)
 def usd_thb():
@@ -204,9 +223,10 @@ with tab1:
         cfg.update({"card_number": "เลขการ์ด", "card_name": "ชื่อการ์ด", "rarity": "ความหายาก", "n_sources": "จำนวนเว็บ",
                     "avg_usd": st.column_config.NumberColumn("ราคาเฉลี่ย", format="฿%.0f")})
         cfg["รูป"] = st.column_config.ImageColumn("รูปการ์ด", width="small", help="คลิกเพื่อขยาย")
-        st.dataframe(view[["รูป", "card_number", "card_name", "แบบการ์ด", "rarity", "avg_usd", "ถูกสุดที่",
-                           "PriceCharting", "Limitless TCG", "TCGplayer", "n_sources"]],
-                     hide_index=True, width="stretch", height=560, row_height=70, column_config=cfg)
+        src_show = [c for c in ["PriceCharting", "Limitless TCG", "TCGplayer"] if view[c].notna().any()]
+        page_df = paginate(view, "price_page", 10)
+        st.dataframe(page_df[["รูป", "card_number", "card_name", "แบบการ์ด", "avg_usd", "ถูกสุดที่"] + src_show + ["n_sources"]],
+                     hide_index=True, width="stretch", row_height=70, height=fit_height(len(page_df), 70), column_config=cfg)
 
 # ------------------------------------------------------------------ tab 2: overview charts
 with tab2:
@@ -261,18 +281,19 @@ with tab3:
         with l:
             st.markdown("#### ขั้นตอนใน DAG")
             st.dataframe(pd.DataFrame([{"ขั้นตอน": k, "สถานะ": icon.get(v, f"🔵 {v}")} for k, v in states.items()]),
-                         hide_index=True, width="stretch")
+                         hide_index=True, width="stretch", height=fit_height(len(states)))
         with r:
             qd = last["quality_details"]
             if qd:
                 qd = qd if isinstance(qd, dict) else json.loads(qd)
                 st.markdown("#### เงื่อนไขตรวจคุณภาพ")
                 st.dataframe(pd.DataFrame([{"เงื่อนไข": k, "ผล": "✅ ผ่าน" if v else "❌ ไม่ผ่าน"} for k, v in qd.get("checks", {}).items()]),
-                             hide_index=True, width="stretch")
+                             hide_index=True, width="stretch", height=fit_height(len(qd.get("checks", {}))))
         with st.expander("ประวัติการรันทั้งหมด"):
-            st.dataframe(runs[["run_id", "started_at", "quality_passed", "branch", "rows_loaded"]].rename(columns={
+            hist = paginate(runs, "run_page", 5)
+            st.dataframe(hist[["run_id", "started_at", "quality_passed", "branch", "rows_loaded"]].rename(columns={
                 "run_id": "รอบการรัน", "started_at": "เริ่ม", "quality_passed": "คุณภาพผ่าน", "rows_loaded": "จำนวนแถว"}),
-                hide_index=True, width="stretch")
+                hide_index=True, width="stretch", height=fit_height(len(hist)))
 
 st.markdown('<div class="foot">02739452 แพลตฟอร์มข้อมูลขนาดใหญ่และการวิเคราะห์ · 6621650582 · '
             'ข้อมูลราคาจากแหล่งสาธารณะ ไม่มีข้อมูลส่วนบุคคล · ราคาเป็นบาทคำนวณจาก USD</div>', unsafe_allow_html=True)
