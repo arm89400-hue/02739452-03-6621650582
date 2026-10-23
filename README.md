@@ -65,7 +65,7 @@ cp .env.example .env          # Windows PowerShell: copy .env.example .env   (th
 docker compose up -d --build  # first start takes a few minutes
 ```
 
-1. Airflow UI: http://localhost:8080 (user and password from `.env`). The DAG `op17_card_prices` is unpaused and runs every 6 hours. Press ▶ **Trigger DAG** to run it now (about 3–4 minutes, mostly the Limitless card pages).
+1. Airflow UI: http://localhost:8080. Default login: **airflow / airflow** (set in `.env`). The DAG `op17_card_prices` is unpaused and runs every 6 hours. Press ▶ **Trigger DAG** to run it now (about 3–4 minutes, mostly the Limitless card pages).
 2. Dashboard: http://localhost:8501
 3. PostgreSQL from the host: `localhost:5433`, database `cards`.
 
