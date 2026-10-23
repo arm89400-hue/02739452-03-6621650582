@@ -1,6 +1,7 @@
 """
-แดชบอร์ดราคาการ์ด One Piece Card Game ชุด OP17 (Streamlit)
-อ่านข้อมูลจาก PostgreSQL โดยตรง (ตารางที่ Airflow DAG `op17_card_prices` เขียนไว้)
+เว็บแดชบอร์ดราคาการ์ด One Piece Card Game ชุด OP17 (Streamlit)
+- อ่านข้อมูลจาก PostgreSQL โดยตรง (ตารางที่ Airflow DAG `op17_card_prices` เขียนไว้)
+- แสดงราคาเป็นเงินบาท (แปลงจาก USD ด้วยอัตราแลกเปลี่ยนล่าสุดจาก open.er-api.com, ถ้าดึงไม่ได้ใช้ค่าสำรอง)
 """
 import json
 import os
@@ -8,60 +9,73 @@ import os
 import pandas as pd
 import plotly.express as px
 import psycopg2
+import requests
 import streamlit as st
 
-st.set_page_config(page_title="ราคาการ์ด OP17", page_icon="🏴‍☠️", layout="wide")
+st.set_page_config(page_title="เช็คราคาการ์ด OP17", page_icon="🃏", layout="wide", initial_sidebar_state="collapsed")
 
-# ------------------------------------------------------------------ theme
-NAVY, RED, GOLD, CREAM = "#0f1d3a", "#d62839", "#f2b630", "#fbf6ec"
-SRC_COLOR = {"pricecharting": "#3a6ea5", "limitless": "#f28c28", "tcgcsv": "#2a9d6f"}
+ACCENT, INK, MUTED = "#e63946", "#1d2939", "#667085"
 SRC_TH = {"pricecharting": "PriceCharting", "limitless": "Limitless TCG", "tcgcsv": "TCGplayer"}
-VAR_TH = {"NORMAL": "ปกติ", "ALT": "อัลเทอร์เนทอาร์ต", "SUPER_ALT": "ซูเปอร์อัลเทอร์เนท", "MANGA": "มังงะ",
+SRC_COLOR = {"PriceCharting": "#4c6ef5", "Limitless TCG": "#f59f00", "TCGplayer": "#12b886"}
+VAR_TH = {"NORMAL": "ปกติ", "ALT": "อาร์ตพิเศษ (AA)", "SUPER_ALT": "ซูเปอร์อาร์ต (SAA)", "MANGA": "มังงะ",
           "SP": "SP", "TREASURE": "เทรเชอร์", "PROMO": "โปรโม"}
+FALLBACK_THB = float(os.environ.get("USD_THB_FALLBACK", "33.0"))
 
 st.markdown(f"""
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Prompt:wght@400;600;700&family=Sarabun:wght@400;600&display=swap');
-html, body, [class*="css"], .stMarkdown, .stDataFrame, p, label, span, div {{ font-family: 'Sarabun', sans-serif; }}
-h1, h2, h3, .hero h1 {{ font-family: 'Prompt', sans-serif !important; }}
-.stApp {{ background: {CREAM}; }}
-[data-testid="stSidebar"] {{ background: {NAVY}; }}
-[data-testid="stSidebar"] * {{ color: #f4efe3 !important; }}
-[data-testid="stSidebar"] [data-baseweb="tag"] {{ background: {RED} !important; }}
-.hero {{ background: linear-gradient(120deg, {NAVY} 0%, #1d3461 60%, {RED} 140%); border-radius: 18px;
-        padding: 26px 30px; color: white; margin-bottom: 18px; box-shadow: 0 8px 24px rgba(15,29,58,.25); }}
-.hero h1 {{ margin: 0; font-size: 2.0rem; color: white; }}
-.hero p {{ margin: 6px 0 0; color: #dfe6f5; font-size: 1.02rem; }}
-.hero .badge {{ display:inline-block; background:{GOLD}; color:{NAVY}; font-weight:700; border-radius:999px;
-               padding:2px 12px; margin-right:8px; font-family:'Prompt',sans-serif; }}
-.kpi {{ background: white; border-radius: 14px; padding: 16px 18px; border-top: 5px solid {RED};
-       box-shadow: 0 3px 12px rgba(0,0,0,.06); height: 100%; }}
-.kpi .lbl {{ color: #6b6b6b; font-size: .92rem; }}
-.kpi .val {{ font-family: 'Prompt', sans-serif; font-size: 1.7rem; font-weight: 700; color: {NAVY}; line-height:1.2; }}
-.kpi .sub {{ color: #8a8a8a; font-size: .85rem; }}
-.kpi.gold {{ border-top-color: {GOLD}; }} .kpi.navy {{ border-top-color: {NAVY}; }} .kpi.green {{ border-top-color: #2a9d6f; }}
-.card {{ background: white; border-radius: 14px; padding: 8px 14px 4px; box-shadow: 0 3px 12px rgba(0,0,0,.06); }}
-.stTabs [data-baseweb="tab"] {{ font-family: 'Prompt', sans-serif; font-size: 1.02rem; }}
-.stTabs [aria-selected="true"] {{ color: {RED} !important; }}
-.foot {{ color:#8a8a8a; font-size:.85rem; text-align:center; margin-top:22px; }}
-</style>
-""", unsafe_allow_html=True)
+@import url('https://fonts.googleapis.com/css2?family=Prompt:wght@500;600;700&family=Sarabun:wght@400;500;600&display=swap');
+html, body, .stApp, p, label, input, textarea, button, .stMarkdown, [data-testid="stMetricLabel"] {{ font-family: 'Sarabun', sans-serif !important; }}
+h1, h2, h3, h4 {{ font-family: 'Prompt', sans-serif !important; color: {INK}; }}
+.stApp {{ background: #f6f7f9; }}
+[data-testid="stSidebar"], [data-testid="collapsedControl"] {{ display: none; }}
+.block-container {{ padding-top: 2rem; max-width: 1250px; }}
+.title {{ font-family: 'Prompt', sans-serif; font-size: 2rem; font-weight: 700; color: {INK}; margin: 0; }}
+.subtitle {{ color: {MUTED}; font-size: 1.05rem; margin: 2px 0 14px; }}
+.pill {{ display:inline-block; background:#fff; border:1px solid #e4e7ec; border-radius:999px; padding:3px 12px;
+        margin:0 6px 6px 0; font-size:.9rem; color:{INK}; }}
+.pill b {{ color:{ACCENT}; }}
+.kpi {{ background:#fff; border:1px solid #eaecf0; border-radius:14px; padding:16px 18px; height:100%; }}
+.kpi .icon {{ font-size:1.4rem; }}
+.kpi .lbl {{ color:{MUTED}; font-size:.95rem; margin-top:2px; }}
+.kpi .val {{ font-family:'Prompt',sans-serif; font-size:1.65rem; font-weight:700; color:{INK}; line-height:1.25; }}
+.kpi .sub {{ color:{MUTED}; font-size:.85rem; }}
+div[data-testid="stTextInput"] input {{ font-size:1.1rem; padding:14px 16px; border-radius:12px; }}
+.stTabs [data-baseweb="tab-list"] {{ gap: 6px; }}
+.stTabs [data-baseweb="tab"] {{ font-family:'Prompt',sans-serif; font-size:1.05rem; background:#fff; border-radius:10px 10px 0 0; padding:8px 18px; }}
+.stTabs [aria-selected="true"] {{ color:{ACCENT} !important; }}
+.hint {{ color:{MUTED}; font-size:.9rem; }}
+.foot {{ color:{MUTED}; font-size:.85rem; text-align:center; margin-top:28px; }}
+</style>""", unsafe_allow_html=True)
 
 
-def kpi(col, label, value, sub="", tone=""):
-    col.markdown(f'<div class="kpi {tone}"><div class="lbl">{label}</div><div class="val">{value}</div>'
-                 f'<div class="sub">{sub}</div></div>', unsafe_allow_html=True)
+def kpi(col, icon, label, value, sub=""):
+    col.markdown(f'<div class="kpi"><div class="icon">{icon}</div><div class="lbl">{label}</div>'
+                 f'<div class="val">{value}</div><div class="sub">{sub}</div></div>', unsafe_allow_html=True)
 
 
-def style_fig(fig, height=380):
-    fig.update_layout(height=height, margin=dict(l=10, r=10, t=50, b=10), paper_bgcolor="white", plot_bgcolor="white",
-                      font=dict(family="Sarabun, sans-serif", size=13), title_font=dict(family="Prompt, sans-serif", size=17),
-                      legend_title_text="แหล่งข้อมูล")
-    fig.for_each_trace(lambda t: t.update(name=SRC_TH.get(t.name, t.name)))
+def baht(x):
+    return "–" if pd.isna(x) else f"฿{x:,.0f}"
+
+
+def nice(fig, h=380):
+    fig.update_layout(height=h, margin=dict(l=8, r=8, t=48, b=8), paper_bgcolor="white", plot_bgcolor="white",
+                      font=dict(family="Sarabun, sans-serif", size=13, color=INK),
+                      title_font=dict(family="Prompt, sans-serif", size=16), legend_title_text="")
+    fig.update_xaxes(gridcolor="#f0f1f3"); fig.update_yaxes(gridcolor="#f0f1f3")
     return fig
 
 
 # ------------------------------------------------------------------ data
+@st.cache_data(ttl=3600)
+def usd_thb():
+    try:
+        r = requests.get("https://open.er-api.com/v6/latest/USD", timeout=6)
+        r.raise_for_status()
+        return float(r.json()["rates"]["THB"]), "open.er-api.com (อัปเดตรายวัน)"
+    except Exception:
+        return FALLBACK_THB, "ค่าสำรอง (ดึงอัตราสดไม่สำเร็จ)"
+
+
 def conn():
     return psycopg2.connect(host=os.environ.get("DATA_DB_HOST", "postgres"), port=int(os.environ.get("DATA_DB_PORT", "5432")),
                             dbname=os.environ.get("DATA_DB_NAME", "cards"), user=os.environ["DATA_DB_USER"],
@@ -69,185 +83,176 @@ def conn():
 
 
 @st.cache_data(ttl=30)
-def q(sql: str) -> pd.DataFrame:
+def q(sql):
     with conn() as c:
         return pd.read_sql(sql, c)
 
 
-def safe(sql: str):
+def safe(sql):
     try:
         return q(sql)
     except Exception:
         return None
 
 
+RATE, RATE_SRC = usd_thb()
 prices = safe("SELECT * FROM card_prices")
 merged = safe("SELECT * FROM cards_merged")
 runs = safe("SELECT * FROM pipeline_runs ORDER BY started_at DESC NULLS LAST LIMIT 20")
 
-st.markdown("""
-<div class="hero">
-  <span class="badge">OP17</span><span class="badge">3 แหล่งข้อมูล</span>
-  <h1>🏴‍☠️ ราคาการ์ด One Piece Card Game</h1>
-  <p>ชุด <b>OP17 "The World's Strongest Warriors"</b> · เปรียบเทียบราคาตลาดจาก PriceCharting · Limitless TCG · TCGplayer
-  <br>ข้อมูลอัปเดตอัตโนมัติด้วย Apache Airflow → PostgreSQL</p>
-</div>""", unsafe_allow_html=True)
-
-if prices is None or prices.empty:
-    st.info("ยังไม่มีข้อมูล กรุณารัน DAG `op17_card_prices` ใน Airflow (http://localhost:8080) ก่อน")
-    st.stop()
-
-prices["price_usd"] = prices["price_usd"].astype(float)
-prices["price_eur"] = prices["price_eur"].astype(float)
-prices["แหล่ง"] = prices["source"].map(SRC_TH).fillna(prices["source"])
-prices["เวอร์ชัน"] = prices["variant"].map(VAR_TH).fillna(prices["variant"])
-
-# ------------------------------------------------------------------ sidebar
-with st.sidebar:
-    st.markdown("## 🔎 ตัวกรอง")
-    src_opts = sorted(prices["source"].unique())
-    f_src = st.multiselect("แหล่งข้อมูล", src_opts, default=src_opts, format_func=lambda s: SRC_TH.get(s, s))
-    var_opts = sorted(prices["variant"].unique())
-    f_var = st.multiselect("เวอร์ชันการ์ด", var_opts, default=var_opts, format_func=lambda v: VAR_TH.get(v, v))
-    pmax = float(prices["price_usd"].max()) if prices["price_usd"].notna().any() else 1.0
-    f_price = st.slider("ช่วงราคา (USD)", 0.0, max(pmax, 1.0), (0.0, max(pmax, 1.0)))
-    f_text = st.text_input("ค้นหาชื่อการ์ด / เลขการ์ด", placeholder="เช่น Luffy หรือ OP17-001")
-    st.markdown("---")
-    if st.button("🔄 โหลดข้อมูลใหม่"):
+# ------------------------------------------------------------------ header
+h1, h2 = st.columns([4, 1])
+with h1:
+    st.markdown('<p class="title">🃏 เช็คราคาการ์ด One Piece ชุด OP17</p>'
+                '<p class="subtitle">"The World\'s Strongest Warriors" · รวมราคาจาก 3 เว็บไว้ที่เดียว แสดงเป็นเงินบาท</p>',
+                unsafe_allow_html=True)
+with h2:
+    st.write("")
+    if st.button("🔄 โหลดข้อมูลใหม่", width="stretch"):
         st.cache_data.clear()
         st.rerun()
-    last = prices["updated_at"].max()
-    st.caption(f"อัปเดตล่าสุด: {pd.to_datetime(last).tz_convert('Asia/Bangkok'):%d/%m/%Y %H:%M} น.")
 
-df = prices[prices["source"].isin(f_src) & prices["variant"].isin(f_var)]
-df = df[df["price_usd"].isna() | df["price_usd"].between(*f_price)]
-if f_text:
-    df = df[df["card_name"].str.contains(f_text, case=False, na=False) | df["card_number"].str.contains(f_text, case=False, na=False)]
+if prices is None or prices.empty:
+    st.info("ยังไม่มีข้อมูล — เปิด Airflow ที่ http://localhost:8080 แล้วกดรัน DAG `op17_card_prices` ก่อน")
+    st.stop()
 
-tab1, tab2, tab3 = st.tabs(["📊 ภาพรวม", "⚖️ เปรียบเทียบราคาข้ามแหล่ง", "⚙️ สถานะ Pipeline"])
+updated = pd.to_datetime(prices["updated_at"].max()).tz_convert("Asia/Bangkok")
+st.markdown(f'<span class="pill">💱 1 USD = <b>{RATE:,.2f} บาท</b> · {RATE_SRC}</span>'
+            f'<span class="pill">🕒 อัปเดตข้อมูล {updated:%d/%m/%Y %H:%M} น.</span>'
+            f'<span class="pill">🌐 แหล่ง: ' + " · ".join(SRC_TH[s] for s in sorted(prices["source"].unique()) if s in SRC_TH) + '</span>',
+            unsafe_allow_html=True)
 
-# ------------------------------------------------------------------ tab 1
+# ------------------------------------------------------------------ prepare
+prices["price_usd"] = prices["price_usd"].astype(float)
+prices["thb"] = prices["price_usd"] * RATE
+prices["เว็บ"] = prices["source"].map(SRC_TH).fillna(prices["source"])
+prices["แบบการ์ด"] = prices["variant"].map(VAR_TH).fillna(prices["variant"])
+
+m = merged.copy() if merged is not None and not merged.empty else pd.DataFrame()
+if not m.empty:
+    for c in ["pricecharting_usd", "limitless_usd", "tcgplayer_usd", "avg_usd", "min_usd", "max_usd"]:
+        m[c] = m[c].astype(float) * RATE
+    m = m.rename(columns={"pricecharting_usd": "PriceCharting", "limitless_usd": "Limitless TCG", "tcgplayer_usd": "TCGplayer"})
+    src_cols = ["PriceCharting", "Limitless TCG", "TCGplayer"]
+    has = m[src_cols].notna().any(axis=1)
+    m["ถูกสุดที่"] = m[src_cols].fillna(float("inf")).idxmin(axis=1).where(has, "–")
+    m["แบบการ์ด"] = m["variant"].map(VAR_TH).fillna(m["variant"])
+
+# ------------------------------------------------------------------ search + filters (main page, not sidebar)
+s1, s2, s3 = st.columns([3, 1.4, 1.2])
+with s1:
+    text = st.text_input("ค้นหา", placeholder="🔍 พิมพ์ชื่อการ์ดหรือเลขการ์ด เช่น Luffy, Zoro, OP17-001", label_visibility="collapsed")
+with s2:
+    var_opts = ["ทุกแบบ"] + [VAR_TH.get(v, v) for v in sorted(prices["variant"].unique())]
+    var_pick = st.selectbox("แบบการ์ด", var_opts, label_visibility="collapsed")
+with s3:
+    sort_pick = st.selectbox("เรียงตาม", ["ราคาสูง → ต่ำ", "ราคาต่ำ → สูง", "เลขการ์ด"], label_visibility="collapsed")
+
+
+def apply_filters(d, name_col="card_name"):
+    if text:
+        d = d[d[name_col].str.contains(text, case=False, na=False) | d["card_number"].str.contains(text, case=False, na=False)]
+    if var_pick != "ทุกแบบ":
+        d = d[d["แบบการ์ด"] == var_pick]
+    return d
+
+
+tab1, tab2, tab3 = st.tabs(["🔍 ค้นหาราคา", "📊 สรุปภาพรวม", "⚙️ สถานะระบบ"])
+
+# ------------------------------------------------------------------ tab 1: price lookup
 with tab1:
-    c1, c2, c3, c4, c5 = st.columns(5)
-    kpi(c1, "จำนวนรายการราคา", f"{len(df):,}", "แถวในตาราง card_prices")
-    kpi(c2, "การ์ดไม่ซ้ำ (หลังรวมข้ามแหล่ง)", f"{len(merged):,}" if merged is not None else "–", "ตาราง cards_merged", "navy")
-    kpi(c3, "แหล่งข้อมูลที่มีข้อมูล", f"{df['source'].nunique()} / 3", " · ".join(SRC_TH[s] for s in sorted(df['source'].unique()) if s in SRC_TH), "green")
-    kpi(c4, "ราคาเฉลี่ย", f"${df['price_usd'].mean():,.2f}" if df["price_usd"].notna().any() else "–",
-        f"มัธยฐาน ${df['price_usd'].median():,.2f}" if df["price_usd"].notna().any() else "", "gold")
-    if df["price_usd"].notna().any():
-        top = df.loc[df["price_usd"].idxmax()]
-        kpi(c5, "การ์ดแพงที่สุด", f"${top['price_usd']:,.0f}", f"{top['card_name']} {top['card_number']}")
-    st.write("")
-
-    g1, g2 = st.columns([3, 2])
-    with g1:
-        top10 = df.dropna(subset=["price_usd"]).sort_values("price_usd", ascending=False).head(10).copy()
-        top10["ป้าย"] = top10["card_name"] + " · " + top10["card_number"] + " (" + top10["เวอร์ชัน"] + ")"
-        fig = px.bar(top10.iloc[::-1], x="price_usd", y="ป้าย", color="source", orientation="h",
-                     title="🏆 10 อันดับการ์ดราคาสูงสุด (USD)", color_discrete_map=SRC_COLOR,
-                     labels={"price_usd": "ราคา (USD)", "ป้าย": ""}, text="price_usd")
-        fig.update_traces(texttemplate="$%{text:,.0f}", textposition="outside", cliponaxis=False)
-        st.plotly_chart(style_fig(fig, 430), config={"displayModeBar": False})
-    with g2:
-        cnt = df.groupby("เวอร์ชัน", as_index=False).size()
-        fig2 = px.pie(cnt, names="เวอร์ชัน", values="size", hole=.55, title="🃏 สัดส่วนรายการตามเวอร์ชันการ์ด",
-                      color_discrete_sequence=[RED, NAVY, GOLD, "#2a9d6f", "#3a6ea5", "#9b5de5", "#888"])
-        fig2.update_traces(textinfo="percent+label")
-        st.plotly_chart(style_fig(fig2, 430), config={"displayModeBar": False})
-
-    g3, g4 = st.columns(2)
-    with g3:
-        by_var = df.groupby(["เวอร์ชัน", "source"], as_index=False)["price_usd"].median()
-        fig3 = px.bar(by_var, x="เวอร์ชัน", y="price_usd", color="source", barmode="group", color_discrete_map=SRC_COLOR,
-                      title="💰 ราคามัธยฐานแยกตามเวอร์ชัน", labels={"price_usd": "USD", "เวอร์ชัน": ""})
-        st.plotly_chart(style_fig(fig3), config={"displayModeBar": False})
-    with g4:
-        h = df.dropna(subset=["price_usd"])
-        fig4 = px.histogram(h, x="price_usd", color="source", nbins=40, log_y=True, color_discrete_map=SRC_COLOR,
-                            title="📈 การกระจายของราคา (แกน Y แบบ log)", labels={"price_usd": "ราคา (USD)"})
-        fig4.update_layout(yaxis_title="จำนวนการ์ด", barmode="overlay")
-        fig4.update_traces(opacity=.75)
-        st.plotly_chart(style_fig(fig4), config={"displayModeBar": False})
-
-    st.markdown("### 📋 ตารางราคาทั้งหมด")
-    show = df.sort_values(["card_number", "variant", "source"])[
-        ["card_number", "card_name", "เวอร์ชัน", "rarity", "แหล่ง", "price_usd", "price_eur", "psa10_usd", "url"]]
-    st.dataframe(show, hide_index=True, width="stretch", height=420, column_config={
-        "card_number": "เลขการ์ด", "card_name": "ชื่อการ์ด", "rarity": "ความหายาก",
-        "price_usd": st.column_config.NumberColumn("ราคา (USD)", format="$%.2f"),
-        "price_eur": st.column_config.NumberColumn("ราคา (EUR)", format="€%.2f"),
-        "psa10_usd": st.column_config.NumberColumn("PSA 10 (USD)", format="$%.2f"),
-        "url": st.column_config.LinkColumn("ลิงก์", display_text="เปิด ↗")})
-
-# ------------------------------------------------------------------ tab 2
-with tab2:
-    if merged is None or merged.empty:
-        st.info("ยังไม่มีตาราง cards_merged")
+    if m.empty:
+        st.info("ยังไม่มีตารางรวมราคา (cards_merged)")
     else:
-        m = merged.copy()
-        for col in ["pricecharting_usd", "limitless_usd", "tcgplayer_usd", "avg_usd", "min_usd", "max_usd", "psa10_usd"]:
-            m[col] = m[col].astype(float)
-        m = m[m["variant"].isin(f_var)]
-        if f_text:
-            m = m[m["card_name"].str.contains(f_text, case=False, na=False) | m["card_number"].str.contains(f_text, case=False, na=False)]
-        m["ส่วนต่าง"] = m["max_usd"] - m["min_usd"]
-        m["เวอร์ชัน"] = m["variant"].map(VAR_TH).fillna(m["variant"])
-        a, b, c, d = st.columns(4)
-        kpi(a, "การ์ดไม่ซ้ำหลังตัดรายการซ้ำ", f"{len(m):,}", "คีย์: เลขการ์ด + เวอร์ชัน", "navy")
-        kpi(b, "พบตั้งแต่ 2 แหล่งขึ้นไป", f"{int((m['n_sources'] > 1).sum()):,}", "จับคู่ข้ามแหล่งได้", "green")
-        kpi(c, "พบครบทั้ง 3 แหล่ง", f"{int((m['n_sources'] == 3).sum()):,}", "", "gold")
-        kpi(d, "รายการซ้ำที่ถูกตัด", f"{max(len(prices) - len(merged), 0):,}", "card_prices − cards_merged")
-        st.write("")
-        st.markdown("### ⚖️ การ์ดใบเดียวกัน ราคาต่างกันมากที่สุด")
-        multi = m[m["n_sources"] > 1].sort_values("ส่วนต่าง", ascending=False).head(25)
-        st.dataframe(multi[["card_number", "card_name", "เวอร์ชัน", "pricecharting_usd", "limitless_usd", "tcgplayer_usd",
-                            "ส่วนต่าง", "n_sources"]], hide_index=True, width="stretch", column_config={
-            "card_number": "เลขการ์ด", "card_name": "ชื่อการ์ด",
-            "pricecharting_usd": st.column_config.NumberColumn("PriceCharting", format="$%.2f"),
-            "limitless_usd": st.column_config.NumberColumn("Limitless", format="$%.2f"),
-            "tcgplayer_usd": st.column_config.NumberColumn("TCGplayer", format="$%.2f"),
-            "ส่วนต่าง": st.column_config.NumberColumn("ส่วนต่างสูงสุด", format="$%.2f"),
-            "n_sources": "จำนวนแหล่ง"})
-        if len(multi):
-            long = multi.head(10).melt(id_vars=["card_number", "card_name"],
-                                       value_vars=["pricecharting_usd", "limitless_usd", "tcgplayer_usd"],
-                                       var_name="src", value_name="usd").dropna()
-            long["source"] = long["src"].map({"pricecharting_usd": "pricecharting", "limitless_usd": "limitless", "tcgplayer_usd": "tcgcsv"})
-            long["การ์ด"] = long["card_name"] + " " + long["card_number"]
-            fig5 = px.bar(long, x="การ์ด", y="usd", color="source", barmode="group", color_discrete_map=SRC_COLOR,
-                          title="📊 เทียบราคา 10 ใบที่ราคาต่างกันมากที่สุด", labels={"usd": "USD", "การ์ด": ""})
-            st.plotly_chart(style_fig(fig5, 420), config={"displayModeBar": False})
+        view = apply_filters(m)
+        sort_col, asc = {"ราคาสูง → ต่ำ": ("max_usd", False), "ราคาต่ำ → สูง": ("min_usd", True),
+                         "เลขการ์ด": ("card_number", True)}[sort_pick]
+        view = view.sort_values(sort_col, ascending=asc, na_position="last")
 
-# ------------------------------------------------------------------ tab 3
+        k1, k2, k3, k4 = st.columns(4)
+        kpi(k1, "🃏", "การ์ดที่พบ", f"{len(view):,} ใบ", "หลังรวมรายการซ้ำจากทุกเว็บ")
+        kpi(k2, "💰", "ราคาเฉลี่ย", baht(view["avg_usd"].mean()), f"มัธยฐาน {baht(view['avg_usd'].median())}")
+        if view["max_usd"].notna().any():
+            t = view.loc[view["max_usd"].idxmax()]
+            kpi(k3, "👑", "แพงที่สุด", baht(t["max_usd"]), f"{t['card_name']} · {t['card_number']}")
+        else:
+            kpi(k3, "👑", "แพงที่สุด", "–")
+        kpi(k4, "🔗", "เทียบได้หลายเว็บ", f"{int((view['n_sources'] > 1).sum()):,} ใบ", "มีราคามากกว่า 1 เว็บ")
+        st.write("")
+        st.markdown("#### ราคาการ์ดแต่ละใบ (บาท)")
+        st.markdown('<p class="hint">ช่องว่าง = เว็บนั้นไม่มีราคาการ์ดใบนี้ · คอลัมน์ "ถูกสุดที่" บอกว่าควรซื้อที่เว็บไหน</p>', unsafe_allow_html=True)
+        cfg = {c: st.column_config.NumberColumn(c, format="฿%.0f") for c in ["PriceCharting", "Limitless TCG", "TCGplayer"]}
+        cfg.update({"card_number": "เลขการ์ด", "card_name": "ชื่อการ์ด", "rarity": "ความหายาก", "n_sources": "จำนวนเว็บ",
+                    "avg_usd": st.column_config.NumberColumn("ราคาเฉลี่ย", format="฿%.0f")})
+        st.dataframe(view[["card_number", "card_name", "แบบการ์ด", "rarity", "avg_usd", "ถูกสุดที่",
+                           "PriceCharting", "Limitless TCG", "TCGplayer", "n_sources"]],
+                     hide_index=True, width="stretch", height=520, column_config=cfg)
+
+# ------------------------------------------------------------------ tab 2: overview charts
+with tab2:
+    d = apply_filters(prices).dropna(subset=["thb"])
+    c1, c2 = st.columns([3, 2])
+    with c1:
+        top = d.sort_values("thb", ascending=False).drop_duplicates(["card_number", "variant"]).head(10).copy()
+        top["การ์ด"] = top["card_name"] + " (" + top["แบบการ์ด"] + ")"
+        fig = px.bar(top.iloc[::-1], x="thb", y="การ์ด", orientation="h", text="thb", color_discrete_sequence=[ACCENT],
+                     title="👑 10 การ์ดราคาสูงสุด", labels={"thb": "ราคา (บาท)", "การ์ด": ""})
+        fig.update_traces(texttemplate="฿%{text:,.0f}", textposition="outside", cliponaxis=False)
+        st.plotly_chart(nice(fig, 440), config={"displayModeBar": False})
+    with c2:
+        bins = pd.cut(d["thb"], [0, 100, 500, 1000, 5000, 20000, float("inf")],
+                      labels=["< ฿100", "฿100–500", "฿500–1,000", "฿1,000–5,000", "฿5,000–20,000", "> ฿20,000"])
+        bc = bins.value_counts().sort_index().reset_index()
+        bc.columns = ["ช่วงราคา", "จำนวน"]
+        fig2 = px.bar(bc, x="ช่วงราคา", y="จำนวน", text="จำนวน", color_discrete_sequence=["#1d2939"],
+                      title="💵 การ์ดส่วนใหญ่อยู่ในช่วงราคาไหน")
+        fig2.update_traces(textposition="outside", cliponaxis=False)
+        st.plotly_chart(nice(fig2, 440), config={"displayModeBar": False})
+    c3, c4 = st.columns(2)
+    with c3:
+        med = d.groupby("แบบการ์ด", as_index=False)["thb"].median().sort_values("thb")
+        fig3 = px.bar(med, x="thb", y="แบบการ์ด", orientation="h", text="thb", color_discrete_sequence=["#f59f00"],
+                      title="🎨 ราคากลางตามแบบการ์ด", labels={"thb": "ราคามัธยฐาน (บาท)", "แบบการ์ด": ""})
+        fig3.update_traces(texttemplate="฿%{text:,.0f}", textposition="outside", cliponaxis=False)
+        st.plotly_chart(nice(fig3), config={"displayModeBar": False})
+    with c4:
+        per = d.groupby("เว็บ", as_index=False).size().rename(columns={"size": "จำนวน"})
+        fig4 = px.pie(per, names="เว็บ", values="จำนวน", hole=.55, color="เว็บ", color_discrete_map=SRC_COLOR,
+                      title="🌐 จำนวนรายการราคาจากแต่ละเว็บ")
+        fig4.update_traces(textinfo="label+value")
+        st.plotly_chart(nice(fig4), config={"displayModeBar": False})
+
+# ------------------------------------------------------------------ tab 3: pipeline status
 with tab3:
     if runs is None or runs.empty:
         st.info("ยังไม่มีประวัติการรัน")
     else:
         last = runs.iloc[0]
-        st.markdown(f"### รอบล่าสุด: `{last['run_id']}`")
-        s1, s2, s3 = st.columns(3)
-        kpi(s1, "ผลตรวจคุณภาพข้อมูล", "✅ ผ่าน" if last["quality_passed"] else "❌ ไม่ผ่าน", "", "green" if last["quality_passed"] else "")
-        kpi(s2, "เส้นทางที่ DAG เลือก (branch)", last["branch"] or "–", "build_merged = ผ่าน / quality_alert = ไม่ผ่าน", "navy")
-        kpi(s3, "จำนวนแถวใน card_prices", f"{int(last['rows_loaded']):,}" if pd.notna(last["rows_loaded"]) else "–", "", "gold")
-        st.write("")
         states = last["task_states"] if isinstance(last["task_states"], dict) else json.loads(last["task_states"] or "{}")
+        ok = sum(v == "success" for v in states.values())
+        a, b, c = st.columns(3)
+        kpi(a, "✅" if last["quality_passed"] else "❌", "ตรวจคุณภาพข้อมูล", "ผ่าน" if last["quality_passed"] else "ไม่ผ่าน",
+            f"เส้นทาง: {last['branch'] or '–'}")
+        kpi(b, "🧩", "task ที่สำเร็จ (รอบล่าสุด)", f"{ok} / {len(states)}", str(pd.to_datetime(last['started_at']).tz_convert('Asia/Bangkok'))[:16] if pd.notna(last['started_at']) else "")
+        kpi(c, "🗄️", "แถวในฐานข้อมูล", f"{int(last['rows_loaded']):,}" if pd.notna(last["rows_loaded"]) else "–", "ตาราง card_prices")
+        st.write("")
         icon = {"success": "🟢 สำเร็จ", "failed": "🔴 ล้มเหลว", "skipped": "⚪ ข้าม", "upstream_failed": "🟠 ต้นทางล้มเหลว"}
         l, r = st.columns(2)
         with l:
-            st.markdown("#### สถานะแต่ละ task")
-            st.dataframe(pd.DataFrame([{"task": k, "สถานะ": icon.get(v, f"🔵 {v}")} for k, v in states.items()]),
-                         hide_index=True)
+            st.markdown("#### ขั้นตอนใน DAG")
+            st.dataframe(pd.DataFrame([{"ขั้นตอน": k, "สถานะ": icon.get(v, f"🔵 {v}")} for k, v in states.items()]),
+                         hide_index=True, width="stretch")
         with r:
             qd = last["quality_details"]
             if qd:
                 qd = qd if isinstance(qd, dict) else json.loads(qd)
-                st.markdown("#### ผลการตรวจคุณภาพข้อมูล")
+                st.markdown("#### เงื่อนไขตรวจคุณภาพ")
                 st.dataframe(pd.DataFrame([{"เงื่อนไข": k, "ผล": "✅ ผ่าน" if v else "❌ ไม่ผ่าน"} for k, v in qd.get("checks", {}).items()]),
-                             hide_index=True)
-        st.markdown("#### ประวัติการรัน")
-        st.dataframe(runs[["run_id", "started_at", "finished_at", "quality_passed", "branch", "rows_loaded"]].rename(columns={
-            "run_id": "รอบการรัน", "started_at": "เริ่ม", "finished_at": "เสร็จ", "quality_passed": "คุณภาพผ่าน",
-            "branch": "branch", "rows_loaded": "จำนวนแถว"}), hide_index=True)
+                             hide_index=True, width="stretch")
+        with st.expander("ประวัติการรันทั้งหมด"):
+            st.dataframe(runs[["run_id", "started_at", "quality_passed", "branch", "rows_loaded"]].rename(columns={
+                "run_id": "รอบการรัน", "started_at": "เริ่ม", "quality_passed": "คุณภาพผ่าน", "rows_loaded": "จำนวนแถว"}),
+                hide_index=True, width="stretch")
 
-st.markdown('<div class="foot">02739452 แพลตฟอร์มข้อมูลขนาดใหญ่และการวิเคราะห์ · 6621650582 · ข้อมูลจากแหล่งสาธารณะ ไม่มีข้อมูลส่วนบุคคล</div>',
-            unsafe_allow_html=True)
+st.markdown('<div class="foot">02739452 แพลตฟอร์มข้อมูลขนาดใหญ่และการวิเคราะห์ · 6621650582 · '
+            'ข้อมูลราคาจากแหล่งสาธารณะ ไม่มีข้อมูลส่วนบุคคล · ราคาเป็นบาทคำนวณจาก USD</div>', unsafe_allow_html=True)
